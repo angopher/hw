@@ -115,16 +115,17 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
             ++pos;
         }
 
-        size_t values[BUF_LEN];
-        hashAndMod(words, words_len, words_num, outfiles.size(), values);
+        size_t file_idxs[BUF_LEN];
+        hashAndMod(words, words_len, words_num, outfiles.size(), file_idxs);
 
         for (size_t i = 0; i < words_num; ++i)
         {
-            size_t idx = values[i];
+            size_t idx = file_idxs[i];
 
             memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx], &words_len[i], sizeof(size_t));
-            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx], words[i], words_len[i]);
-            per_file_buf_pos[idx] += sizeof(size_t) + words_len[i];
+            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx] + sizeof(size_t), words[i], words_len[i]);
+            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx] + sizeof(size_t) + words_len[i], &words_seq[i], sizeof(size_t));
+            per_file_buf_pos[idx] += 2*sizeof(size_t) + words_len[i];
         }
 
         for (size_t i = 0; i < outfiles.size(); ++i)
