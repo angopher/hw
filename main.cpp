@@ -58,7 +58,7 @@ int main()
         std::filesystem::remove(f);
 }
 
-void hashAndMod(char ** words, size_t * words_len, size_t n, size_t mod_value, size_t * values)
+void mapWordToFile(char ** words, size_t * words_len, size_t n, size_t mod_value, size_t * values)
 {
     std::hash<std::string_view> hash;
     for (size_t i = 0; i < n; ++i)
@@ -96,7 +96,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     while(readn = read(in, buf + write_offset, BUF_LEN - write_offset) && readn > 0)
     {
         char * pos = buf;
-        char * end = buf + readn;
+        const char * end = buf + write_offset + readn;
         char * cur_word = buf;
         while (pos < end)
         {
@@ -116,7 +116,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         }
 
         size_t file_idxs[BUF_LEN];
-        hashAndMod(words, words_len, words_num, outfiles.size(), file_idxs);
+        mapWordToFile(words, words_len, words_num, outfiles.size(), file_idxs);
 
         for (size_t i = 0; i < words_num; ++i)
         {
@@ -131,12 +131,8 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         for (size_t i = 0; i < outfiles.size(); ++i)
             write(outs[i], per_outfile_buf[i].data(), per_file_buf_pos[i]);
 
-        if (cur_word - buf < BUF_LEN)
-        {
-            size_t left = BUF_LEN - (cur_word - buf);
-            memmove(buf, cur_word, left);
-            write_offset = left;
-        }
+        memmove(buf, cur_word, end - cur_word);
+        write_offset = end - cur_word;
     }
 
     close(in);
@@ -182,35 +178,78 @@ struct SeqCount
     size_t count;
 };
 
+struct WordSeq
+{
+    WordSeq(char * data, size_t len, size_t _seq):
+        word(data, len),
+        seq(_seq) {}
+
+    std::string_view word;
+    size_t seq;
+};
+
 void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
-    std::unordered_map<std::string, SeqCount> words;
+    std::unordered_map<std::string_view, SeqCount> words;
     words.reserve(1000*1000);
+
+    std::vector<char *> bufs;
+    char write_offset = 0;
+    std::vector<WordSeq> word_seq;
+    word_seq.reserve(BUF_LEN/(2*sizeof(size_t)));
 
     for (size_t i = start_idx; i <= end_idx; ++i)
     {
-        auto in = std::ifstream(infiles[i]);
+        for (char * buf : bufs)
+            delete []buf;
 
-        std::string line;
-        while(std::getline(in, line))
+        bufs.resize(0);
+        bufs.push_back(new char[BUF_LEN]);
+        char * buf = bufs.back();
+
+        int in = open(infiles[i].c_str(), O_RDONLY);
+        //TODO: handle open error
+
+        size_t readn = 0;
+        //TODO: handle read error
+        while(readn = read(in, buf + write_offset, BUF_LEN - write_offset) && readn > 0)
         {
-            size_t pos = line.find_first_of('\t');
-            std::string seq_str = line.substr(pos);
+            char * pos = buf;
+            const char * end = buf + write_offset + readn;
 
-            line.resize(pos);
-
-            auto it = words.find(line);
-            if (it == words.end())
+            size_t word_len = *(size_t*)pos;
+            while(pos + 2*sizeof(size_t) + word_len + sizeof(size_t) <= end)
             {
-                SeqCount s;
-                s.seq = std::stoull(seq_str);
-                s.count = 1;
-                words[line] = s;
+                char * word = pos + sizeof(size_t);
+                size_t * seq = (size_t*)(pos + sizeof(size_t) + word_len);
+                
+                word_seq.emplace_back(pos + sizeof(size_t), word_len, *seq);
+
+                pos += 2*sizeof(size_t) + word_len;
+                word_len = *(size_t*)pos;
             }
-            else
-                it->second.count += 1;
+
+            bufs.push_back(new char[BUF_LEN]);
+
+            memmove(bufs.back(), pos, end - pos);
+            write_offset = end - pos;
+            buf = bufs.back();
+
+            for (auto & w : word_seq)
+            {
+                auto it = words.find(w.word);
+                if (it == words.end())
+                {
+                    SeqCount s;
+                    s.seq = w.seq;
+                    s.count = 1;
+                    words[w.word] = s;
+                }
+                else
+                    it->second.count += 1;
+            }
         }
-        in.close();
+        close(in);
 
         StringSeq min;
         for (auto & it : words)
