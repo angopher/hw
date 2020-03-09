@@ -31,14 +31,14 @@ int main()
 {
     std::string dir = "/tmp/";
     size_t cpu_num = 2;
-    size_t split_num = 4;
+    size_t split_num = 2;
     std::string infile = dir + "in";
 
     size_t middle_files_num = cpu_num * split_num;
 
     std::vector<std::string> middle_files(middle_files_num);
     for (size_t i = 0; i < middle_files.size(); ++i)
-        middle_files[i] = "/tmp/." + std::to_string(i);
+        middle_files[i] = "/tmp/" + std::to_string(i);
 
 
     //split input file to many middle files
@@ -58,17 +58,28 @@ int main()
         std::filesystem::remove(f);
 }
 
-void mapWordToFile(char ** words, size_t * words_len, size_t n, size_t mod_value, size_t * values)
+
+struct WordSeq
+{
+    WordSeq(char * data, size_t len, size_t _seq):
+        word(data, len),
+        seq(_seq) {}
+
+    std::string_view word;
+    size_t seq;
+};
+
+void mapWordToFile(const std::vector<WordSeq> & word_seq, size_t mod_value, size_t * values)
 {
     std::hash<std::string_view> hash;
-    for (size_t i = 0; i < n; ++i)
+    for (size_t i = 0; i < word_seq.size(); ++i)
     {
-        std::string_view str(words[i], words_len[i]);
-        values[i] = hash(str) % mod_value;
+        values[i] = hash(word_seq[i].word) % mod_value;
     }
 }
 
-#define BUF_LEN 4096
+#define BUF_LEN 40960 //4M
+
 
 void splitFile(const std::string & infile, const std::vector<std::string> & outfiles)
 {
@@ -76,24 +87,25 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
 
     std::vector<int> outs(outfiles_num);
     for (size_t i = 0; i < outs.size(); ++i)
-        outs[i] = open(outfiles[i].c_str(), O_WRONLY);
+        outs[i] = open(outfiles[i].c_str(), O_WRONLY | O_CREAT);
 
 
     size_t seq = 0;
 
     char buf[BUF_LEN];
     char write_offset = 0;
-    char * words[BUF_LEN];
-    size_t words_seq[BUF_LEN];
-    size_t words_len[BUF_LEN];
-    size_t words_num = 0;
 
-    std::vector<std::array<char, 5*BUF_LEN>> per_outfile_buf; 
-    std::vector<size_t> per_file_buf_pos(outfiles.size());
+    std::vector<WordSeq> word_seq;
+    word_seq.reserve(BUF_LEN);
+
+    std::vector<std::array<char, 5*BUF_LEN>> per_file_buf(outfiles.size()); 
+    std::vector<char*> per_file_buf_pos(outfiles.size());
+    for (size_t i = 0; i < per_file_buf.size(); ++i)
+        per_file_buf_pos[i] = per_file_buf[i].data();
 
     int in = open(infile.c_str(), O_RDONLY);
     size_t readn = 0;
-    while(readn = read(in, buf + write_offset, BUF_LEN - write_offset) && readn > 0)
+    while(readn = read(in, buf + write_offset, BUF_LEN - write_offset), readn > 0)
     {
         char * pos = buf;
         const char * end = buf + write_offset + readn;
@@ -103,33 +115,29 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
             if (*pos == '\n')
             {
                 ++seq;
-                words_len[words_num] = pos - cur_word;
-                words_seq[words_num] = seq;
-                words[words_num] = cur_word;
-                words_num += 1;
+                word_seq.emplace_back(cur_word, pos - cur_word, seq);
                 cur_word = pos + 1;
-
-                *pos = '\0';
             }
 
             ++pos;
         }
 
         size_t file_idxs[BUF_LEN];
-        mapWordToFile(words, words_len, words_num, outfiles.size(), file_idxs);
+        mapWordToFile(word_seq,outfiles.size(), file_idxs);
 
-        for (size_t i = 0; i < words_num; ++i)
+        for (size_t i = 0; i < word_seq.size(); ++i)
         {
             size_t idx = file_idxs[i];
 
-            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx], &words_len[i], sizeof(size_t));
-            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx] + sizeof(size_t), words[i], words_len[i]);
-            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx] + sizeof(size_t) + words_len[i], &words_seq[i], sizeof(size_t));
-            per_file_buf_pos[idx] += 2*sizeof(size_t) + words_len[i];
+            *(size_t*)(per_file_buf_pos[idx]) = word_seq[i].word.size();
+            memmove(per_file_buf_pos[idx] + sizeof(size_t), word_seq[i].word.data(), word_seq[i].word.size());
+            *(size_t*)(per_file_buf_pos[idx] + sizeof(size_t) + word_seq[i].word.size()) = word_seq[i].seq;
+
+            per_file_buf_pos[idx] += 2*sizeof(size_t) + word_seq[i].word.size();
         }
 
         for (size_t i = 0; i < outfiles.size(); ++i)
-            write(outs[i], per_outfile_buf[i].data(), per_file_buf_pos[i]);
+            write(outs[i], per_file_buf[i].data(), per_file_buf_pos[i] - per_file_buf[i].data());
 
         memmove(buf, cur_word, end - cur_word);
         write_offset = end - cur_word;
@@ -178,15 +186,6 @@ struct SeqCount
     size_t count;
 };
 
-struct WordSeq
-{
-    WordSeq(char * data, size_t len, size_t _seq):
-        word(data, len),
-        seq(_seq) {}
-
-    std::string_view word;
-    size_t seq;
-};
 
 void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
@@ -212,13 +211,14 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
 
         size_t readn = 0;
         //TODO: handle read error
-        while(readn = read(in, buf + write_offset, BUF_LEN - write_offset) && readn > 0)
+        while(readn = read(in, buf + write_offset, BUF_LEN - write_offset), readn > 0)
         {
             char * pos = buf;
             const char * end = buf + write_offset + readn;
 
             size_t word_len = *(size_t*)pos;
-            while(pos + 2*sizeof(size_t) + word_len + sizeof(size_t) <= end)
+            //为什么有3个sizeof(size_t)? why not 2? 为了在循环中消除一次if判断
+            while(pos + 3*sizeof(size_t) + word_len <= end)
             {
                 char * word = pos + sizeof(size_t);
                 size_t * seq = (size_t*)(pos + sizeof(size_t) + word_len);
