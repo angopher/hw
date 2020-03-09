@@ -6,6 +6,10 @@
 #include <vector>
 #include <unordered_map>
 #include <thread>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <string_view>
 
 struct StringSeq
 {
@@ -54,30 +58,90 @@ int main()
         std::filesystem::remove(f);
 }
 
+void hashAndMod(char ** words, size_t * words_len, size_t n, size_t mod_value, size_t * values)
+{
+    std::hash<std::string_view> hash;
+    for (size_t i = 0; i < n; ++i)
+    {
+        std::string_view str(words[i], words_len[i]);
+        values[i] = hash(str) % mod_value;
+    }
+}
+
+#define BUF_LEN 4096
 
 void splitFile(const std::string & infile, const std::vector<std::string> & outfiles)
 {
     size_t outfiles_num = outfiles.size();
 
-    std::vector<std::ofstream> outs(outfiles_num);
+    std::vector<int> outs(outfiles_num);
     for (size_t i = 0; i < outs.size(); ++i)
-        outs[i].open(outfiles[i], std::ofstream::out);
+        outs[i] = open(outfiles[i].c_str(), O_WRONLY);
 
-    std::hash<std::string> hash_fn;
 
     size_t seq = 0;
-    std::string word;
 
-    std::ifstream in(infile);
-    while(std::getline(in, word))
+    char buf[BUF_LEN];
+    char write_offset = 0;
+    char * words[BUF_LEN];
+    size_t words_seq[BUF_LEN];
+    size_t words_len[BUF_LEN];
+    size_t words_num = 0;
+
+    std::vector<std::array<char, 5*BUF_LEN>> per_outfile_buf; 
+    std::vector<size_t> per_file_buf_pos(outfiles.size());
+
+    int in = open(infile.c_str(), O_RDONLY);
+    size_t readn = 0;
+    while(readn = read(in, buf + write_offset, BUF_LEN - write_offset) && readn > 0)
     {
-        size_t idx = hash_fn(word) % (outfiles_num);
-        outs[idx] << word << '\t' << ++seq << std::endl; 
-    }
-    in.close();
+        char * pos = buf;
+        char * end = buf + readn;
+        char * cur_word = buf;
+        while (pos < end)
+        {
+            if (*pos == '\n')
+            {
+                ++seq;
+                words_len[words_num] = pos - cur_word;
+                words_seq[words_num] = seq;
+                words[words_num] = cur_word;
+                words_num += 1;
+                cur_word = pos + 1;
 
-    for (auto & o: outs)
-        o.close();
+                *pos = '\0';
+            }
+
+            ++pos;
+        }
+
+        size_t values[BUF_LEN];
+        hashAndMod(words, words_len, words_num, outfiles.size(), values);
+
+        for (size_t i = 0; i < words_num; ++i)
+        {
+            size_t idx = values[i];
+
+            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx], &words_len[i], sizeof(size_t));
+            memmove(per_outfile_buf[idx].data() + per_file_buf_pos[idx], words[i], words_len[i]);
+            per_file_buf_pos[idx] += sizeof(size_t) + words_len[i];
+        }
+
+        for (size_t i = 0; i < outfiles.size(); ++i)
+            write(outs[i], per_outfile_buf[i].data(), per_file_buf_pos[i]);
+
+        if (cur_word - buf < BUF_LEN)
+        {
+            size_t left = BUF_LEN - (cur_word - buf);
+            memmove(buf, cur_word, left);
+            write_offset = left;
+        }
+    }
+
+    close(in);
+
+    for (int fd : outs)
+        close(fd);
 }
 
 
@@ -120,6 +184,8 @@ struct SeqCount
 void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
     std::unordered_map<std::string, SeqCount> words;
+    words.reserve(1000*1000);
+
     for (size_t i = start_idx; i <= end_idx; ++i)
     {
         auto in = std::ifstream(infiles[i]);
