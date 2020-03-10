@@ -111,7 +111,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     word_seqs.reserve(BUF_LEN);
 
     //write buffer for outfiles
-    std::vector<std::array<char, 5*BUF_LEN>> per_file_buf(outfiles.size()); 
+    std::vector<std::array<char, 9*BUF_LEN>> per_file_buf(outfiles.size()); 
     std::vector<char*> per_file_buf_pos(outfiles.size());
 
 
