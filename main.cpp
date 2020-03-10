@@ -76,8 +76,9 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     while(std::getline(in, word))
     {
         size_t idx = hash_fn(word) % (outfiles_num);
+        ++seq;
         if (!word.empty())
-            outs[idx] << word << '\t' << ++seq << std::endl; 
+            outs[idx] << word << '\t' << seq << std::endl; 
     }
     in.close();
 
