@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <string_view>
+#include <chrono>
 
 struct StringSeq
 {
@@ -40,13 +41,26 @@ int main(int argc, char ** argv)
         middle_files[i] = "./" + std::to_string(i+1);
 
 
+    {
+    auto start = std::chrono::system_clock::now();
+
     //split input file to many middle files
     splitFile(infile, middle_files);
 
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end-start;
+    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
+    }
+
+
+    auto start = std::chrono::system_clock::now();
 
     std::vector<StringSeq> results(middle_files_num);
     calcFirstWordParallel(middle_files, cpu_num, results);
 
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end-start;
+    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
 
     StringSeq got = mergeResults(results);
 
@@ -73,16 +87,85 @@ struct WordSeq
     size_t seq;
 };
 
-void mapWordToFile(const std::vector<WordSeq> & word_seqs, size_t mod_value, size_t * values)
-{
-    std::hash<std::string_view> hash;
-    for (size_t i = 0; i < word_seqs.size(); ++i)
-    {
-        values[i] = hash(word_seqs[i].word) % mod_value;
-    }
-}
 
-#define BUF_LEN 40960 //4M
+#define BUF_LEN 512*1024//512k
+
+struct Context;
+using ContextPtr = std::shared_ptr<Context>;
+
+struct Context
+{
+    Context(size_t output_file_num) :
+        per_file_buf(output_file_num),
+        per_file_buf_pos(output_file_num)
+
+    {
+        word_seqs.reserve(BUF_LEN);
+
+        buf.resize(BUF_LEN);
+
+        for (size_t i = 0; i < per_file_buf.size(); ++i)
+        {
+            per_file_buf[i] = new char[9*BUF_LEN]();
+            per_file_buf_pos[i] = per_file_buf[i];
+        }
+    }
+
+    ~Context()
+    {
+        for (size_t i = 0; i < per_file_buf.size(); ++i)
+            delete []per_file_buf[i];
+    }
+
+    void mapWord(size_t mod_size, size_t * selector)
+    {
+        std::hash<std::string_view> hash;
+        for (size_t i = 0; i < word_seqs.size(); ++i)
+            selector[i] = hash(word_seqs[i].word) % mod_size;
+    }
+
+    //gather data to write buffer
+    void gatherData(size_t *selector)
+    {
+        for (size_t i = 0; i < word_seqs.size(); ++i)
+        {
+            size_t idx = selector[i];
+
+            //format: |word1_len|word1|seq1|word2_len|word2|seq2|...
+            (*(size_t*)(per_file_buf_pos[idx])) = word_seqs[i].word.size();
+            memmove(per_file_buf_pos[idx] + sizeof(size_t), word_seqs[i].word.data(), word_seqs[i].word.size());
+            (*(size_t*)(per_file_buf_pos[idx] + sizeof(size_t) + word_seqs[i].word.size())) = word_seqs[i].seq;
+
+            per_file_buf_pos[idx] += 2*sizeof(size_t) + word_seqs[i].word.size();
+        }
+
+    }
+
+    void writeData(const std::vector<int> & outs)
+    {
+        for (size_t i = 0; i < outs.size(); ++i)
+        {
+            write(outs[i], per_file_buf[i], per_file_buf_pos[i] - per_file_buf[i]);
+            per_file_buf_pos[i] = per_file_buf[i];
+        }
+    }
+
+
+    static ContextPtr newContext(size_t output_file_num);
+    //static Context* newContext(size_t output_file_num);
+
+    std::vector<char> buf;
+    std::vector<WordSeq> word_seqs;
+    std::vector<char*> per_file_buf;
+    std::vector<char*> per_file_buf_pos;
+};
+
+
+ContextPtr Context::newContext(size_t output_file_num)
+{
+    return std::make_shared<Context>(output_file_num);
+    //return new Context(output_file_num);
+}
 
 
 void splitFile(const std::string & infile, const std::vector<std::string> & outfiles)
@@ -102,26 +185,25 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     }
 
 
-    size_t seq = 0; //word sequence number in raw file
+    auto start = std::chrono::system_clock::now();
 
-    char buf[BUF_LEN]; //read buffer
-    size_t write_offset = 0; //buf write offset
+    auto ctx = Context::newContext(outfiles.size());
 
-    std::vector<WordSeq> word_seqs;
-    word_seqs.reserve(BUF_LEN);
-
-    //write buffer for outfiles
-    std::vector<std::array<char, 9*BUF_LEN>> per_file_buf(outfiles.size()); 
-    std::vector<char*> per_file_buf_pos(outfiles.size());
-
+    auto end_time = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end_time-start;
+    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
 
     int in = open(infile.c_str(), O_RDONLY);
+    size_t seq = 0; //word sequence number in raw file
+    size_t write_offset = 0; //buf write offset
     size_t readn = 0;
-    while(readn = read(in, buf + write_offset, BUF_LEN - write_offset), readn > 0)
+    while(readn = read(in, ctx->buf.data() + write_offset, BUF_LEN - write_offset), readn > 0)
     {
-        char * pos = buf;
-        const char * end = buf + write_offset + readn;
-        char * cur_word = buf;
+        ctx->word_seqs.resize(0);
+
+        char * pos = ctx->buf.data();
+        const char * end = ctx->buf.data() + write_offset + readn;
+        char * cur_word = ctx->buf.data();
         while (pos < end)
         {
             //per word per line
@@ -129,7 +211,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
             {
                 ++seq;
                 if (pos > cur_word)
-                    word_seqs.emplace_back(cur_word, pos - cur_word, seq);
+                    ctx->word_seqs.emplace_back(cur_word, pos - cur_word, seq);
 
                 cur_word = pos + 1;
             }
@@ -137,34 +219,16 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
             ++pos;
         }
 
-        size_t file_idxs[BUF_LEN];
+        size_t selector[BUF_LEN];
+        ctx->mapWord(outfiles.size(), selector);
 
-        mapWordToFile(word_seqs,outfiles.size(), file_idxs);
+        ctx->gatherData(selector);
 
+        ctx->writeData(outs);
 
-        for (size_t i = 0; i < per_file_buf.size(); ++i)
-            per_file_buf_pos[i] = per_file_buf[i].data();
-
-        //gather data to write buffer
-        //output file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
-        for (size_t i = 0; i < word_seqs.size(); ++i)
-        {
-            size_t idx = file_idxs[i];
-
-            (*(size_t*)(per_file_buf_pos[idx])) = word_seqs[i].word.size();
-            memmove(per_file_buf_pos[idx] + sizeof(size_t), word_seqs[i].word.data(), word_seqs[i].word.size());
-            (*(size_t*)(per_file_buf_pos[idx] + sizeof(size_t) + word_seqs[i].word.size())) = word_seqs[i].seq;
-
-            per_file_buf_pos[idx] += 2*sizeof(size_t) + word_seqs[i].word.size();
-        }
-
-        for (size_t i = 0; i < outfiles.size(); ++i)
-            write(outs[i], per_file_buf[i].data(), per_file_buf_pos[i] - per_file_buf[i].data());
-
-        //try recycle unused data
-        memmove(buf, cur_word, end - cur_word);
+        //try recycle data
+        memmove(ctx->buf.data(), cur_word, end - cur_word);
         write_offset = end - cur_word;
-        word_seqs.resize(0);
     }
 
     close(in);
@@ -254,8 +318,6 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
                 
                 word_seqs.emplace_back(pos + sizeof(size_t), word_len, *seq);
 
-                //std::cout << word_seqs.back().word << " " << word_seqs.back().seq << std::endl;
-
                 pos += 2*sizeof(size_t) + word_len;
                 word_len = *(size_t*)pos;
             }
@@ -270,7 +332,6 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
                 pos += 2*sizeof(size_t) + word_len;
             }
 
-            //std::cout << "write_offset:" << write_offset  << " word size:" << word_seqs.size() << std::endl;
 
             //recycle unused data
             memmove(bufs.back(), pos, end - pos);
