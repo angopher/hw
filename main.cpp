@@ -23,14 +23,14 @@ void calcFirstWordParallel(const std::vector<std::string> & infiles, size_t para
 StringSeq mergeResults(const std::vector<StringSeq> & results);
 
 
-int main()
+int main(int argc, char ** argv)
 {
-    std::string dir = "/tmp/";
-    size_t cpu_num = 2;
-    size_t split_num = 4;
-    std::string infile = dir + "in";
+    std::string infile = argv[1];
+    size_t cpu_num = std::stoull(argv[2]);
+    size_t split_num = std::stoull(argv[3]);
 
     size_t middle_files_num = cpu_num * split_num;
+
 
     std::vector<std::string> middle_files(middle_files_num);
     for (size_t i = 0; i < middle_files.size(); ++i)
@@ -72,7 +72,8 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     while(std::getline(in, word))
     {
         size_t idx = hash_fn(word) % (outfiles_num);
-        outs[idx] << word << '\t' << ++seq << std::endl; 
+        if (!word.empty())
+            outs[idx] << word << '\t' << ++seq << std::endl; 
     }
     in.close();
 
@@ -119,9 +120,11 @@ struct SeqCount
 
 void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
-    std::unordered_map<std::string, SeqCount> words;
     for (size_t i = start_idx; i <= end_idx; ++i)
     {
+        std::unordered_map<std::string, SeqCount> words;
+        words.reserve(10*1000*1000);
+
         auto in = std::ifstream(infiles[i]);
 
         std::string line;
