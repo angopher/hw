@@ -46,7 +46,11 @@ int main(int argc, char ** argv)
 
 
     StringSeq got = mergeResults(results);
-    std::cout << "word:" << got.str << " seq:" << got.seq << std::endl;
+
+    if (!got.str.empty())
+        std::cout << "word:" << got.str << " seq:" << got.seq << std::endl;
+    else
+        std::cout << "not find" << std::endl;
 
 
     //remove middle files
