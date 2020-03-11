@@ -23,45 +23,36 @@ struct StringSeq
 };
 
 void splitFile(const std::string & infile, const std::vector<std::string> & outfiles);
-void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results);
-void calcFirstWordParallel(const std::vector<std::string> & infiles, size_t parallel_num, std::vector<StringSeq> & results);
+void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results);
+void calcFirstUniqWordParallel(const std::vector<std::string> & infiles, size_t parallel_num, std::vector<StringSeq> & results);
 StringSeq mergeResults(const std::vector<StringSeq> & results);
 
 
 int main(int argc, char ** argv)
 {
     std::string infile = argv[1];
-    size_t cpu_num = std::stoull(argv[2]);
+    size_t parallel_num = std::stoull(argv[2]);
     size_t split_num = std::stoull(argv[3]);
 
-    size_t middle_files_num = cpu_num * split_num;
+    size_t middle_files_num = parallel_num * split_num;
 
+    //生成间文件，第二阶段每个线程顺序处理split num个文件
     std::vector<std::string> middle_files(middle_files_num);
     for (size_t i = 0; i < middle_files.size(); ++i)
         middle_files[i] = "./" + std::to_string(i+1);
 
 
-    {
-    auto start = std::chrono::system_clock::now();
-
-    //split input file to many middle files
+    //第一阶段: 将输入文件split成多个中间文件
     splitFile(infile, middle_files);
 
-    auto end = std::chrono::system_clock::now();
-    std::chrono::duration<double> elapsed_seconds = end-start;
-    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
-    }
 
-
-    auto start = std::chrono::system_clock::now();
-
+    //第二阶段: 并行处理所有的中间文件，并发算出每个中间文件中的第一个不重复的word
+    //此处传入的results数组只在算出结果时才会写一次，不会导致严重的cache conflict
     std::vector<StringSeq> results(middle_files_num);
-    calcFirstWordParallel(middle_files, cpu_num, results);
+    calcFirstUniqWordParallel(middle_files, parallel_num, results);
 
-    auto end = std::chrono::system_clock::now();
-    std::chrono::duration<double> elapsed_seconds = end-start;
-    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
 
+    //第三阶段：合并结果
     StringSeq got = mergeResults(results);
 
     if (!got.word.empty())
@@ -69,8 +60,6 @@ int main(int argc, char ** argv)
     else
         std::cout << "not find" << std::endl;
 
-
-    //remove middle files
     for (auto & f : middle_files)
         std::filesystem::remove(f);
 }
@@ -93,6 +82,10 @@ struct WordSeq
 struct Context;
 using ContextPtr = std::shared_ptr<Context>;
 
+
+//数据结构设计考虑了局部性原理,数据尽量连续存储.
+//之所以抽出来一个Context，主要是为了把一次读文件的上下文数据集中封装，
+//方便分词阶段后续可能涉及到的并行化优化
 struct Context
 {
     Context(size_t output_file_num) :
@@ -100,13 +93,16 @@ struct Context
         per_file_buf_pos(output_file_num)
 
     {
-        word_seqs.reserve(BUF_LEN);
-
         buf.resize(BUF_LEN);
+
+        //预分配可能出现的最多的word数空间
+        word_seqs.reserve(BUF_LEN/2);
 
         for (size_t i = 0; i < per_file_buf.size(); ++i)
         {
-            per_file_buf[i] = new char[9*BUF_LEN]();
+            //一次分配充足的内存，以空间换取时间
+            //为什么是9*BUF_LEN, 为了涵盖最极端的情况:每行一个字符, 预留16个字节存储word len和seq
+            per_file_buf[i] = new char[17*BUF_LEN]();
             per_file_buf_pos[i] = per_file_buf[i];
         }
     }
@@ -117,6 +113,7 @@ struct Context
             delete []per_file_buf[i];
     }
 
+    //映射单词
     void mapWord(size_t mod_size, size_t * selector)
     {
         std::hash<std::string_view> hash;
@@ -124,7 +121,7 @@ struct Context
             selector[i] = hash(word_seqs[i].word) % mod_size;
     }
 
-    //gather data to write buffer
+    //集中归拢数据
     void gatherData(size_t *selector)
     {
         //format: |word1_len|word1|seq1|word2_len|word2|seq2|...
@@ -141,6 +138,7 @@ struct Context
 
     }
 
+    //写出数据到中间文件
     void writeData(const std::vector<int> & outs)
     {
         for (size_t i = 0; i < outs.size(); ++i)
@@ -153,8 +151,15 @@ struct Context
 
     static ContextPtr newContext(size_t output_file_num);
 
+    //读buffuer，每次都在buf的空间上，原地构建word
+    //每次批量读出来的word都是连续存储的, cpu cache友好
     std::vector<char> buf;
+
+    //记录在buf的内存中构建的word和seq
     std::vector<WordSeq> word_seqs;
+
+    //输出缓冲区
+    //每个中间文件对应一个下标
     std::vector<char*> per_file_buf;
     std::vector<char*> per_file_buf_pos;
 };
@@ -183,17 +188,18 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     }
 
 
-    auto start = std::chrono::system_clock::now();
+    int in = open(infile.c_str(), O_RDONLY);
+    if (in < 0)
+    {
+        std::cerr << "open file fail. file:" << infile << " error:" << strerror(errno) <<  std::endl;
+        exit(-1);
+    }
+
 
     auto ctx = Context::newContext(outfiles.size());
 
-    auto end_time = std::chrono::system_clock::now();
-    std::chrono::duration<double> elapsed_seconds = end_time-start;
-    std::cout << "costs:" << elapsed_seconds.count() << std::endl;
-
-    int in = open(infile.c_str(), O_RDONLY);
-    size_t seq = 0; //word sequence number in raw file
-    size_t write_offset = 0; //buf write offset
+    size_t seq = 0; //序列号，用来表示全局单词序列号
+    size_t write_offset = 0; //buf可写入的位置偏移
     size_t readn = 0;
     while(readn = read(in, ctx->buf.data() + write_offset, BUF_LEN - write_offset), readn > 0)
     {
@@ -204,10 +210,11 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         char * cur_word = ctx->buf.data();
         while (pos < end)
         {
-            //per word per line
+            //每行一个单词
             if (*pos == '\n')
             {
                 ++seq;
+                //判断是否为空行
                 if (pos > cur_word)
                     ctx->word_seqs.emplace_back(cur_word, pos - cur_word, seq);
 
@@ -217,15 +224,20 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
             ++pos;
         }
 
+        // 将word映射到所属的中间文件下标
         size_t selector[BUF_LEN];
         ctx->mapWord(outfiles.size(), selector);
 
+        //把单词收集到每个中间文件的写入buf中，连续存储
         ctx->gatherData(selector);
 
+        //将所有文件的写入buf中的数据，写到对应的文件中
         ctx->writeData(outs);
 
-        //try recycle data
+        //回收buf的尾部数据
         memmove(ctx->buf.data(), cur_word, end - cur_word);
+
+        //调整buf的偏移
         write_offset = end - cur_word;
     }
 
@@ -235,8 +247,8 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         close(fd);
 }
 
-
-void calcFirstWordParallel(const std::vector<std::string> & infiles, size_t parallel_num, std::vector<StringSeq> & results)
+//并行计算每个文件中的第一个不重复的单词
+void calcFirstUniqWordParallel(const std::vector<std::string> & infiles, size_t parallel_num, std::vector<StringSeq> & results)
 {
     size_t step = infiles.size() / parallel_num;
     std::vector<std::shared_ptr<std::thread>> threads;
@@ -246,7 +258,7 @@ void calcFirstWordParallel(const std::vector<std::string> & infiles, size_t para
         size_t e = std::min(i + step, infiles.size()) - 1;
 
         threads.emplace_back(std::make_shared<std::thread>([&infiles, &results, s, e] () {
-                    calcFirstWord(infiles, s, e, results);
+                    calcFirstUniqWord(infiles, s, e, results);
                     }));
     }
 
@@ -274,8 +286,12 @@ struct SeqCount
 };
 
 
-void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
+void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
+    //读取数据，并且在buf上原地构建word
+    //bufs资源复用，最后统一释放
+    std::vector<char *> bufs;
+
     for (size_t i = start_idx; i <= end_idx; ++i)
     {
         std::unordered_map<std::string_view, SeqCount> words;
@@ -284,10 +300,11 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
         std::vector<WordSeq> word_seqs;
         word_seqs.reserve(BUF_LEN/(2*sizeof(size_t)));
 
-        std::vector<char *> bufs; //read buffer
-        bufs.push_back(new char[BUF_LEN]); //use std::array<char, BUF_LEN>
-        char * buf = bufs.back();
+        if (bufs.size() == 0)
+            bufs.push_back(new char[BUF_LEN]);
 
+        size_t cur_buf_idx = 0;
+        char * buf = bufs[cur_buf_idx];
 
         int in = open(infiles[i].c_str(), O_RDONLY);
         if (in < 0)
@@ -296,9 +313,9 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
             exit(-1);
         }
 
-        size_t write_offset = 0; //buf write offset
-        int readn = 0; // read bytes
-        //output file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
+        size_t write_offset = 0;
+        int readn = 0;
+        //file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
         while(readn = read(in, buf + write_offset, BUF_LEN - write_offset), readn > 0)
         {
             word_seqs.resize(0);
@@ -308,7 +325,8 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
 
             size_t word_len = *(size_t*)pos;
 
-            //为什么有3个sizeof(size_t)? why not 2? 为了在循环中消除一次if判断
+            //为什么有3个sizeof(size_t)? why not 2?
+            //为了在循环中消除一次if判断: if (pos + sizeof(size_t) < end)
             while(pos + 3*sizeof(size_t) + word_len <= end)
             {
                 char * word = pos + sizeof(size_t);
@@ -320,8 +338,7 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
                 word_len = *(size_t*)pos;
             }
 
-            bufs.push_back(new char[BUF_LEN]);
-
+            //上个循环可能会留下一条记录没有读完
             if (pos + 2*sizeof(size_t) + word_len <= end)
             {
                 char * word = pos + sizeof(size_t);
@@ -331,12 +348,20 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
             }
 
 
-            //recycle unused data
-            memmove(bufs.back(), pos, end - pos);
+            if (cur_buf_idx == bufs.size() - 1)
+                bufs.push_back(new char[BUF_LEN]);
+            ++cur_buf_idx;
+
+            char * new_buf = bufs[cur_buf_idx];
+
+
+            //回收尾部数据
+            memmove(new_buf, pos, end - pos);
             write_offset = end - pos;
-            buf = bufs.back();
+            buf = new_buf;
 
 
+            //统计word频次
             for (auto & w : word_seqs)
             {
                 auto it = words.find(w.word);
@@ -351,13 +376,14 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
                     it->second.count += 1;
             }
         }
+
         close(in);
+
 
         StringSeq min;
         min.seq = UINT64_MAX;
         for (auto & it : words)
         {
-            //std::cout << "word:" << it.first << " count:" << it.second.count << " seq:" << it.second.seq << std::endl;
             if (it.second.count == 1 && it.second.seq < min.seq)
             {
                 min.word = it.first;
@@ -366,10 +392,10 @@ void calcFirstWord(const std::vector<std::string> & infiles, size_t start_idx, s
         }
 
         results[i] = min;
-
-        for (char * buf : bufs)
-            delete []buf;
     }
+
+    for (char * buf : bufs)
+        delete []buf;
 
     return;
 }
