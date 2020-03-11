@@ -21,5 +21,7 @@ func main() {
         fmt.Println(string(result))
     }
 
-    fmt.Println("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    for i := 0; i < 200; i++ {
+        fmt.Printf("a");
+    }
 }

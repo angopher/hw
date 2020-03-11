@@ -85,7 +85,7 @@ using ContextPtr = std::shared_ptr<Context>;
 
 //数据结构设计考虑了局部性原理,数据尽量连续存储.
 //之所以抽出来一个Context，主要是为了把一次读文件的上下文数据集中封装，
-//方便分词阶段后续可能涉及到的并行化优化
+//方便分词阶段后续可能涉及到的并行化优化, 迫于时间和带来的代码复杂度，目前还没做
 struct Context
 {
     Context(size_t output_file_num) :
@@ -141,6 +141,7 @@ struct Context
     //写出数据到中间文件
     void writeData(const std::vector<int> & outs)
     {
+        //这里还有优化空间，可以等buf满了再写入，会提升写文件效率，不过这样整体的代码复杂度会增加，所以暂时没做
         for (size_t i = 0; i < outs.size(); ++i)
         {
             write(outs[i], per_file_buf[i], per_file_buf_pos[i] - per_file_buf[i]);
