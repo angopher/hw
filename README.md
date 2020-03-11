@@ -35,13 +35,12 @@ word seq
 
 #### example
 ```
-time ./hw/t.txt 10 10
-
+lilideMacBook-Pro:hw lili$ time ./a ./t.txt 10 10
 word:fdaffegdafafdafafeafgadfgdafagvfklgjkrljgkf seq:320000001
 
-real	15m50.456s
-user	3m50.579s
-sys	13m4.622s
+real	0m26.820s
+user	1m16.134s
+sys	0m11.923s
 ```
 
 
