@@ -127,11 +127,11 @@ struct Context
     //gather data to write buffer
     void gatherData(size_t *selector)
     {
+        //format: |word1_len|word1|seq1|word2_len|word2|seq2|...
         for (size_t i = 0; i < word_seqs.size(); ++i)
         {
             size_t idx = selector[i];
 
-            //format: |word1_len|word1|seq1|word2_len|word2|seq2|...
             (*(size_t*)(per_file_buf_pos[idx])) = word_seqs[i].word.size();
             memmove(per_file_buf_pos[idx] + sizeof(size_t), word_seqs[i].word.data(), word_seqs[i].word.size());
             (*(size_t*)(per_file_buf_pos[idx] + sizeof(size_t) + word_seqs[i].word.size())) = word_seqs[i].seq;
@@ -152,7 +152,6 @@ struct Context
 
 
     static ContextPtr newContext(size_t output_file_num);
-    //static Context* newContext(size_t output_file_num);
 
     std::vector<char> buf;
     std::vector<WordSeq> word_seqs;
@@ -164,7 +163,6 @@ struct Context
 ContextPtr Context::newContext(size_t output_file_num)
 {
     return std::make_shared<Context>(output_file_num);
-    //return new Context(output_file_num);
 }
 
 
