@@ -20,7 +20,7 @@
 g++-8
 
 #### 编译命令：
-g++-8 -O3 -o a main.cpp -std=c++17 -lstdc++fs
+g++-8 -O3 -g -o a main.cpp -std=c++17 -lstdc++fs -lpthread
 
 ## 运行
 ./a /tmp/words.txt 16 10
