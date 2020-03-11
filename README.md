@@ -33,7 +33,7 @@ word seq
 
 #### example
 ```
-time ./hw/t.txt 10 10
+lilideMacBook-Pro:hw lili$ time ./hw/t.txt 10 10
 
 word:fdaffegdafafdafafeafgadfgdafagvfklgjkrljgkf seq:320000001
 
