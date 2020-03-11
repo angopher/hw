@@ -76,7 +76,8 @@ struct WordSeq
 struct Context;
 using ContextPtr = std::shared_ptr<Context>;
 
-//数据结构设计考虑了局部性原理,数据尽量连续存储.
+//数据结构设计考虑了局部性原理,数据尽量连续存储. 
+//不直接使用string类，规避各种零碎、频繁的动态申请内存和内存拷贝
 //之所以抽出来一个Context，主要是为了把一次读文件的上下文数据集中封装，
 //方便分词阶段后续可能涉及到的并行化优化, 迫于时间和带来的代码复杂度，目前还没做
 struct Context
