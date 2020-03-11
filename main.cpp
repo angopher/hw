@@ -175,6 +175,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
 {
     size_t outfiles_num = outfiles.size();
 
+    //open所有中间文件
     std::vector<int> outs(outfiles_num);
     for (size_t i = 0; i < outs.size(); ++i)
     {
@@ -188,6 +189,7 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     }
 
 
+    //open输入文件
     int in = open(infile.c_str(), O_RDONLY);
     if (in < 0)
     {
@@ -196,6 +198,8 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
     }
 
 
+
+    //循环批量读文件，并构建word、seq，批量hash写入到中间文件
     auto ctx = Context::newContext(outfiles.size());
 
     size_t seq = 0; //序列号，用来表示全局单词序列号
@@ -313,9 +317,10 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
             exit(-1);
         }
 
+
+        //file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
         size_t write_offset = 0;
         int readn = 0;
-        //file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
         while(readn = read(in, buf + write_offset, BUF_LEN - write_offset), readn > 0)
         {
             word_seqs.resize(0);
