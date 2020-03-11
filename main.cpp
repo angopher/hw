@@ -27,7 +27,6 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
 void calcFirstUniqWordParallel(const std::vector<std::string> & infiles, size_t parallel_num, std::vector<StringSeq> & results);
 StringSeq mergeResults(const std::vector<StringSeq> & results);
 
-
 int main(int argc, char ** argv)
 {
     std::string infile = argv[1];
@@ -41,16 +40,13 @@ int main(int argc, char ** argv)
     for (size_t i = 0; i < middle_files.size(); ++i)
         middle_files[i] = "./" + std::to_string(i+1);
 
-
     //第一阶段: 将输入文件split成多个中间文件
     splitFile(infile, middle_files);
-
 
     //第二阶段: 并行处理所有的中间文件，并发算出每个中间文件中的第一个不重复的word
     //此处传入的results数组只在算出结果时才会写一次，不会导致严重的cache conflict
     std::vector<StringSeq> results(middle_files_num);
     calcFirstUniqWordParallel(middle_files, parallel_num, results);
-
 
     //第三阶段：合并结果
     StringSeq got = mergeResults(results);
@@ -64,7 +60,6 @@ int main(int argc, char ** argv)
         std::filesystem::remove(f);
 }
 
-
 struct WordSeq
 {
     WordSeq() = default;
@@ -76,12 +71,10 @@ struct WordSeq
     size_t seq;
 };
 
-
 #define BUF_LEN 512*1024//512k
 
 struct Context;
 using ContextPtr = std::shared_ptr<Context>;
-
 
 //数据结构设计考虑了局部性原理,数据尽量连续存储.
 //之所以抽出来一个Context，主要是为了把一次读文件的上下文数据集中封装，
@@ -149,7 +142,6 @@ struct Context
         }
     }
 
-
     static ContextPtr newContext(size_t output_file_num);
 
     //读buffuer，每次都在buf的空间上，原地构建word
@@ -165,12 +157,10 @@ struct Context
     std::vector<char*> per_file_buf_pos;
 };
 
-
 ContextPtr Context::newContext(size_t output_file_num)
 {
     return std::make_shared<Context>(output_file_num);
 }
-
 
 void splitFile(const std::string & infile, const std::vector<std::string> & outfiles)
 {
@@ -189,7 +179,6 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         }
     }
 
-
     //open输入文件
     int in = open(infile.c_str(), O_RDONLY);
     if (in < 0)
@@ -198,11 +187,8 @@ void splitFile(const std::string & infile, const std::vector<std::string> & outf
         exit(-1);
     }
 
-
-
     //循环批量读文件，并构建word、seq，批量hash写入到中间文件
     auto ctx = Context::newContext(outfiles.size());
-
     size_t seq = 0; //序列号，用来表示全局单词序列号
     size_t write_offset = 0; //buf可写入的位置偏移
     size_t readn = 0;
@@ -271,7 +257,6 @@ void calcFirstUniqWordParallel(const std::vector<std::string> & infiles, size_t 
         t->join();
 }
 
-
 StringSeq mergeResults(const std::vector<StringSeq> & results)
 {
     StringSeq min;
@@ -279,17 +264,14 @@ StringSeq mergeResults(const std::vector<StringSeq> & results)
     for (auto & r : results)
         if (r.seq != 0 && r.seq < min.seq)
             min = r;
-
     return min;
 }
-
 
 struct SeqCount
 {
     size_t seq;
     size_t count;
 };
-
 
 void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_idx, size_t end_idx, std::vector<StringSeq> & results)
 {
@@ -318,7 +300,6 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
             exit(-1);
         }
 
-
         //file format: |word1_len|word1|seq1|word2_len|word2|seq2|...
         size_t write_offset = 0;
         int readn = 0;
@@ -328,7 +309,6 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
 
             char * pos = buf;
             const char * end = buf + write_offset + (size_t)readn;
-
             size_t word_len = *(size_t*)pos;
 
             //为什么有3个sizeof(size_t)? why not 2?
@@ -353,19 +333,16 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
                 pos += 2*sizeof(size_t) + word_len;
             }
 
-
+            //切换buffer
             if (cur_buf_idx == bufs.size() - 1)
                 bufs.push_back(new char[BUF_LEN]);
             ++cur_buf_idx;
-
             char * new_buf = bufs[cur_buf_idx];
-
 
             //回收尾部数据
             memmove(new_buf, pos, end - pos);
             write_offset = end - pos;
             buf = new_buf;
-
 
             //统计word频次
             for (auto & w : word_seqs)
@@ -384,7 +361,6 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
         }
 
         close(in);
-
 
         StringSeq min;
         min.seq = UINT64_MAX;
@@ -405,8 +381,3 @@ void calcFirstUniqWord(const std::vector<std::string> & infiles, size_t start_id
 
     return;
 }
-
-
-
-
-
